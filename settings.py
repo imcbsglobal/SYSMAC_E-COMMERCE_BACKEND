@@ -35,7 +35,7 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.environ.get(
     'ALLOWED_HOSTS',
-    '192.168.1.27,localhost,127.0.0.1,sysmac.in,www.sysmac.in'
+    '192.168.1.27,localhost,127.0.0.1,sysmac.in,myimc.in,www.myimc.in'
 ).split(',')
 
 
@@ -44,7 +44,8 @@ ALLOWED_HOSTS = os.environ.get(
 
 CSRF_TRUSTED_ORIGINS = [
     'https://sysmac.in',
-    'https://www.sysmac.in',  # Optional if you're also using www
+    'https://myimc.in',
+    'https://www.myimc.in',
 ]
 
 
