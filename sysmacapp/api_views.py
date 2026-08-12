@@ -1285,9 +1285,124 @@ def admin_custom_product_delete(request, pk):
     return Response({'success': True})
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ── Admin Sysmac products (per-variant / per-barcode rows) ──────────────
+#
+# ProductBatch (acc_productbatch) can have MULTIPLE rows for the same
+# productcode — each row is a distinct variant/barcode with its own
+# salesprice/bmrp. The admin table needs to show every one of those rows
+# individually (one table row per barcode), not collapse them down to a
+# single "last batch wins" price like the storefront does.
+#
+# _fetch_all_product_batches() and _build_admin_sysmac_variant_rows() are
+# ADDITIVE — they don't replace _build_price_map()/_fetch_api_products(),
+# which are still used everywhere else (storefront products(), cart,
+# wishlist, deals, orders, etc.) exactly as before.
+# ══════════════════════════════════════════════════════════════════════════
+
+ADMIN_SYSMAC_ROWS_CACHE_KEY = "admin_sysmac_variant_rows"
+ADMIN_SYSMAC_ROWS_CACHE_TTL = 600  # 10 minutes, same as the rest of the sync-tool cache
+
+
+def _fetch_all_product_batches():
+    """
+    Unlike _build_price_map (which keeps only the last/most-recent batch
+    row per productcode), this keeps EVERY batch row — each one is a
+    distinct variant/barcode with its own salesprice.
+
+    Returns: {productcode: [ {slno, barcode, price, original_price}, ... ]}
+    """
+    qs = ProductBatch.objects.all().order_by('productcode', 'slno')
+    grouped = {}
+    for b in qs:
+        grouped.setdefault(b.productcode, []).append({
+            'slno': b.slno,
+            'barcode': (b.barcode or '').strip(),
+            'price': b.salesprice or Decimal('0'),
+            'original_price': b.bmrp or Decimal('0'),
+        })
+    return grouped
+
+
+def _build_admin_sysmac_variant_rows(request, force_refresh=False):
+    """
+    Admin Sysmac Products table data: one row per ProductBatch (i.e. per
+    barcode/variant), not one row per product code. A product code with
+    3 batch rows (3 barcodes) produces 3 rows here, each with its own
+    price looked up against that specific barcode.
+
+    Products with no batch rows at all still get a single placeholder row
+    (price 0, blank barcode) so they aren't silently dropped from the
+    admin list.
+
+    EditedAPIProduct overrides are keyed by product code (original_code),
+    so a manual edit (name/brand/price override/active/bestseller) still
+    applies to ALL variant rows of that code — same as before.
+    """
+    if not force_refresh:
+        cached = cache.get(ADMIN_SYSMAC_ROWS_CACHE_KEY)
+        if cached is not None:
+            return cached
+
+    products_qs = SysmacProduct.objects.all().order_by('code')
+    batches_map = _fetch_all_product_batches()
+    edited_map = {e.original_code: e for e in EditedAPIProduct.objects.all()}
+    photos_map = _photos_by_code()
+
+    rows = []
+    for p in products_qs:
+        code = p.code
+        edited = edited_map.get(code)
+        photos = photos_map.get(code)
+
+        if edited and edited.image:
+            image = _abs(request, edited.image.url)
+        elif photos:
+            image = photos['thumbnail']
+        else:
+            image = ''
+
+        variants = batches_map.get(code) or [
+            {'slno': None, 'barcode': '', 'price': Decimal('0'), 'original_price': Decimal('0')}
+        ]
+
+        for v in variants:
+            rows.append({
+                'row_id': f"{code}::{v['barcode'] or v['slno'] or '0'}",
+                'code': code,
+                'barcode': v['barcode'],
+                'name': p.name or 'Unknown Product',
+                'edited_name': edited.name if edited else None,
+                'product': p.product or '',
+                'edited_product': edited.product if edited else None,
+                'category': p.sub_category or '',
+                'edited_category': edited.category if edited else None,
+                'brand': p.brand or '',
+                'edited_brand': edited.brand if edited else None,
+                'company': p.company or '',
+                'edited_company': edited.company if edited else None,
+                'price': float(v['price']),
+                'edited_price': float(edited.price) if (edited and edited.price) else None,
+                'original_price': float(v['original_price']),
+                'image': image,
+                'is_active': edited.is_active if edited else True,
+                'is_bestseller': edited.is_bestseller if edited else False,
+                'is_edited': edited is not None,
+            })
+
+    cache.set(ADMIN_SYSMAC_ROWS_CACHE_KEY, rows, ADMIN_SYSMAC_ROWS_CACHE_TTL)
+    return rows
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def admin_sysmac_products(request):
+    """
+    Returns one row PER BARCODE/VARIANT (via _build_admin_sysmac_variant_rows),
+    paginated 50 rows per page. A product code with multiple ProductBatch
+    rows now appears multiple times here — once per barcode — each with
+    its own price, instead of collapsing to a single "last batch wins" row.
+    """
     if not _is_admin(request.user):
         return Response({'detail': 'Forbidden'}, status=403)
 
@@ -1295,51 +1410,15 @@ def admin_sysmac_products(request):
     if page < 1:
         page = 1
 
-    raw_results, count, num_pages = _fetch_api_products_page(page)
+    all_rows = _build_admin_sysmac_variant_rows(request)
 
-    codes = [str(p.get('code', '')) for p in raw_results]
-    edited_map = {
-        e.original_code: e
-        for e in EditedAPIProduct.objects.filter(original_code__in=codes)
-    }
-    photos_map = _photos_by_code()
-
-    result = []
-    for p in raw_results:
-        code = str(p.get('code', ''))
-        edited = edited_map.get(code)
-        photos = photos_map.get(code)
-        if edited and edited.image:
-            image = _abs(request, edited.image.url)
-        elif photos:
-            image = photos['thumbnail']
-        else:
-            image = p.get('image', '')
-        result.append({
-            'code': code,
-            'name': p.get('name', ''),
-            'edited_name': edited.name if edited else None,
-            'product': p.get('product', ''),
-            'edited_product': edited.product if edited else None,
-            'category': p.get('category', ''),
-            'edited_category': edited.category if edited else None,
-            'brand': p.get('brand', ''),
-            'edited_brand': edited.brand if edited else None,
-            'company': p.get('company', ''),
-            'edited_company': edited.company if edited else None,
-            'price': float(p.get('price') or 0),
-            'edited_price': float(edited.price) if (edited and edited.price) else None,
-            'original_price': float(p.get('original_price') or 0),
-            'image': image,
-            'is_active': edited.is_active if edited else True,
-            'is_bestseller': edited.is_bestseller if edited else False,
-            'is_edited': edited is not None,
-        })
+    paginator = Paginator(all_rows, 50)
+    page_obj = paginator.get_page(page) if paginator.num_pages else paginator.get_page(1)
 
     return Response({
-        'results': result,
-        'count': count,
-        'num_pages': num_pages,
+        'results': list(page_obj.object_list),
+        'count': paginator.count,
+        'num_pages': paginator.num_pages,
         'page': page,
     })
 
@@ -1367,6 +1446,10 @@ def admin_sysmac_product_update(request, code):
     if 'image' in request.FILES:
         edited.image = request.FILES['image']
     edited.save()
+    # Bust the admin variant-rows cache so the edit (name/price/brand/
+    # active/bestseller override) shows up immediately instead of waiting
+    # up to ADMIN_SYSMAC_ROWS_CACHE_TTL seconds for it to expire on its own.
+    cache.delete(ADMIN_SYSMAC_ROWS_CACHE_KEY)
     return Response({'success': True})
 
 
@@ -1376,6 +1459,8 @@ def admin_sysmac_product_delete(request, code):
     if not _is_admin(request.user):
         return Response({'detail': 'Forbidden'}, status=403)
     EditedAPIProduct.objects.filter(original_code=str(code)).delete()
+    # Same cache-busting reasoning as admin_sysmac_product_update above.
+    cache.delete(ADMIN_SYSMAC_ROWS_CACHE_KEY)
     return Response({'success': True})
 
 
