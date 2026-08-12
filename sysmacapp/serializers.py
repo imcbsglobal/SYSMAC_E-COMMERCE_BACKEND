@@ -166,13 +166,18 @@ class SysmacProductSerializer(serializers.ModelSerializer):
                   'company', 'product', 'brand', 'price', 'original_price']
 
     def get_price(self, obj):
+        # NOTE: settings__icontains filter removed — acc_productbatch has
+        # no `settings` column in the real table (confirmed via
+        # ProgrammingError: column acc_productbatch.settings does not
+        # exist). See ProductBatch model docstring in models.py.
         batch = ProductBatch.objects.filter(
-            productcode=obj.code, settings__icontains='##EC##'
+            productcode=obj.code
         ).order_by('slno').last()
         return float(batch.salesprice) if batch and batch.salesprice else 0.0
 
     def get_original_price(self, obj):
+        # NOTE: settings__icontains filter removed — see get_price() above.
         batch = ProductBatch.objects.filter(
-            productcode=obj.code, settings__icontains='##EC##'
+            productcode=obj.code
         ).order_by('slno').last()
         return float(batch.bmrp) if batch and batch.bmrp else 0.0

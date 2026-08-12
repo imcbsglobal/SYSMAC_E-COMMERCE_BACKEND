@@ -600,7 +600,7 @@ class SysmacProductType(models.Model):
     Was: https://api.sysmac.in/api/productproduct/
     """
     name = models.CharField(max_length=30, primary_key=True)
-    settings = models.CharField(max_length=300, null=True, blank=True)
+    
     url = models.CharField(max_length=300, null=True, blank=True)
 
     class Meta:
@@ -619,7 +619,7 @@ class SysmacProductBrand(models.Model):
     Was: https://api.sysmac.in/api/productbrand/
     """
     name = models.CharField(max_length=30, primary_key=True)
-    settings = models.CharField(max_length=300, null=True, blank=True)
+   
     url = models.CharField(max_length=300, null=True, blank=True)
 
     class Meta:
@@ -677,7 +677,7 @@ class SysmacProduct(models.Model):
     brand = models.CharField(max_length=30, null=True, blank=True)
     text6 = models.CharField(max_length=40, null=True, blank=True)
     nameinsl = models.CharField(max_length=350, null=True, blank=True)
-    settings = models.CharField(max_length=300, null=True, blank=True)
+  
     properties = models.CharField(max_length=900, null=True, blank=True)
 
     class Meta:
@@ -712,6 +712,12 @@ class ProductBatch(models.Model):
     '%##EC##%'
     This is where pricing lives — joined to SysmacProduct via productcode.
     salesprice is the confirmed customer-facing selling price.
+
+    NOTE: unlike the other synced tables, the real acc_productbatch table
+    in Postgres has NO `settings` column — it was removed here after a
+    ProgrammingError (column acc_productbatch.settings does not exist)
+    confirmed the model was out of sync with the actual table. Do not add
+    it back unless the column is actually added to the DB.
     """
     slno = models.AutoField(primary_key=True)
     productcode = models.CharField(max_length=30)
@@ -723,7 +729,6 @@ class ProductBatch(models.Model):
     nlc1 = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True)
     barcode = models.CharField(max_length=35, null=True, blank=True)
     bmrp = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True)
-    settings = models.CharField(max_length=300, null=True, blank=True)
 
     class Meta:
         db_table = "acc_productbatch"

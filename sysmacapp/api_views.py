@@ -32,6 +32,14 @@ from .serializers import (
 # acc_productbatch is returned as-is, regardless of its `settings` value
 # or its `product`/category field. Whatever is in the table is what shows
 # up on the storefront.
+#
+# NOTE 2: Bestseller badges and discount ("% OFF") badges are intentionally
+# disabled at this layer. `is_bestseller` is always sent as False, and
+# `original_price` is always mirrored to equal `price` (rather than the
+# synced `bmrp` value), so the frontend's own discount-comparison logic
+# (`original_price > price`) never evaluates true. This keeps the
+# storefront showing exactly what's coming from the sync tool with no
+# manual/computed merchandising flags layered on top.
 SYSMAC_IMAGE_BASE_URL = "https://api.sysmac.in/images"  # PLACEHOLDER — confirm with Sysmac
 
 FULL_CATALOGUE_CACHE_KEY = "sysmac_full_catalogue"
@@ -394,6 +402,10 @@ def build_product_list(request):
     (SysmacProductType) and acc_productbrand (SysmacProductBrand) via
     _resolve_category() / _resolve_brand() — neither is taken as-is from
     acc_product.product / acc_product.brand anymore.
+
+    Bestseller and discount badges are disabled here: `is_bestseller` is
+    always False and `original_price` always mirrors `price`, regardless
+    of any EditedAPIProduct override or synced bmrp value.
     """
     api_products = _fetch_api_products()
     edited_map = {p.original_code: p for p in EditedAPIProduct.objects.all()}
@@ -418,12 +430,13 @@ def build_product_list(request):
         elif p.get('image'):
             image = p.get('image')
 
+        item_price = float(edited.price) if (edited and edited.price) else float(p.get('price') or 0)
+
         out.append({
             'id': code, 'code': code,
             'name': (edited.name if edited else None) or p.get('name', 'Unknown Product'),
-            'price': float(edited.price) if (edited and edited.price) else float(p.get('price') or 0),
-            'original_price': float(edited.original_price) if (edited and edited.original_price)
-                               else float(p.get('original_price') or 0),
+            'price': item_price,
+            'original_price': item_price,
             'category': (edited.product if edited else None)
                         or _resolve_category(p.get('product', ''), valid_categories)
                         or 'General',
@@ -432,7 +445,7 @@ def build_product_list(request):
                      or 'SYSMAC',
             'company': (edited.company if edited else None) or p.get('company', '') or 'SYSMAC',
             'image': image, 'type': 'sysmac',
-            'is_bestseller': edited.is_bestseller if edited else False,
+            'is_bestseller': False,
         })
 
     for cp in CustomProduct.objects.filter(is_active=True):
@@ -444,12 +457,16 @@ def build_product_list(request):
             'brand': cp.brand or 'SYSMAC',
             'company': cp.company or 'SYSMAC',
             'image': _abs(request, cp.main_image.url) if cp.main_image else '',
-            'type': 'custom', 'is_bestseller': cp.is_bestseller,
+            'type': 'custom', 'is_bestseller': False,
         })
     return out
 
 
 def _build_product_dict(request, p, edited, photos_map=None, valid_categories=None, valid_brands=None):
+    """
+    Bestseller and discount badges are disabled here too: `is_bestseller`
+    is always False and `original_price` always mirrors `price`.
+    """
     code = str(p.get('code', ''))
     photos = (photos_map or {}).get(code)
     image = ''
@@ -465,12 +482,13 @@ def _build_product_dict(request, p, edited, photos_map=None, valid_categories=No
     if valid_brands is None:
         valid_brands = _valid_brand_codes()
 
+    item_price = float(edited.price) if (edited and edited.price) else float(p.get('price') or 0)
+
     return {
         'id': code, 'code': code,
         'name': (edited.name if edited else None) or p.get('name', 'Unknown Product'),
-        'price': float(edited.price) if (edited and edited.price) else float(p.get('price') or 0),
-        'original_price': float(edited.original_price) if (edited and edited.original_price)
-                           else float(p.get('original_price') or 0),
+        'price': item_price,
+        'original_price': item_price,
         'category': (edited.product if edited else None)
                     or _resolve_category(p.get('product', ''), valid_categories)
                     or 'General',
@@ -479,7 +497,7 @@ def _build_product_dict(request, p, edited, photos_map=None, valid_categories=No
                  or 'SYSMAC',
         'company': (edited.company if edited else None) or p.get('company', '') or 'SYSMAC',
         'image': image, 'type': 'sysmac',
-        'is_bestseller': edited.is_bestseller if edited else False,
+        'is_bestseller': False,
     }
 
 
@@ -491,6 +509,9 @@ def products(request):
     row in acc_product (joined with acc_productbatch for pricing) is
     included, subject only to explicit search/category/brand/sort query
     params and per-item is_active from EditedAPIProduct (if set).
+
+    Bestseller and discount badges are disabled — see _build_product_dict
+    and build_product_list.
     """
     page_param = request.GET.get('page')
 
@@ -556,7 +577,7 @@ def products(request):
                 'brand': cp.brand or 'SYSMAC',
                 'company': cp.company or 'SYSMAC',
                 'image': _abs(request, cp.main_image.url) if cp.main_image else '',
-                'type': 'custom', 'is_bestseller': cp.is_bestseller,
+                'type': 'custom', 'is_bestseller': False,
             })
 
     # Optional filters still work in paginated mode, applied to the
