@@ -40,7 +40,6 @@ from .serializers import (
 # (`original_price > price`) never evaluates true. This keeps the
 # storefront showing exactly what's coming from the sync tool with no
 # manual/computed merchandising flags layered on top.
-SYSMAC_IMAGE_BASE_URL = "https://api.sysmac.in/images"  # PLACEHOLDER — confirm with Sysmac
 
 FULL_CATALOGUE_CACHE_KEY = "sysmac_full_catalogue"
 FULL_CATALOGUE_CACHE_TTL = 600  # 10 minutes — DB catalogue doesn't change every second
@@ -286,18 +285,16 @@ def _fetch_sysmac_photos(force_refresh=False):
 
 
 def _sysmac_photo_url(url2):
+    """
+    url2 (from SysmacProductPhoto, synced from acc_productphoto) is
+    already a complete, ready-to-use image URL, e.g.
+    https://cloud.sysmac.in/images/<uuid>.jpg — sourced straight from
+    your own SysmacProductPhoto model, not any external API.
+    Just return it as-is — no reconstruction needed.
+    """
     if not url2:
         return ''
-    path = url2.replace('\\', '/')
-    parts = [seg for seg in path.split('/') if seg]
-    lower = [seg.lower() for seg in parts]
-    if 'images' not in lower:
-        return ''
-    idx = lower.index('images')
-    tail = parts[idx + 1:]
-    if not tail:
-        return ''
-    return f"{SYSMAC_IMAGE_BASE_URL}/" + "/".join(tail)
+    return url2.strip()
 
 
 def _rebuild_photos_by_code(force_refresh=False):
