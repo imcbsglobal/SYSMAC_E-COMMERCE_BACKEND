@@ -400,6 +400,11 @@ def build_product_list(request):
     _resolve_category() / _resolve_brand() — neither is taken as-is from
     acc_product.product / acc_product.brand anymore.
 
+    `product_type` is the raw acc_product.product value (or its
+    EditedAPIProduct override), exposed as-is for the "Product Type"
+    homepage/all-products filter — unlike `category`, it is NOT resolved
+    against acc_productproduct.
+
     Bestseller and discount badges are disabled here: `is_bestseller` is
     always False and `original_price` always mirrors `price`, regardless
     of any EditedAPIProduct override or synced bmrp value.
@@ -437,6 +442,8 @@ def build_product_list(request):
             'category': (edited.product if edited else None)
                         or _resolve_category(p.get('product', ''), valid_categories)
                         or 'General',
+            'product_type': (edited.product if edited else None)
+                            or (p.get('product') or '').strip(),
             'brand': (edited.brand if edited else None)
                      or _resolve_brand(p.get('brand', ''), valid_brands)
                      or 'SYSMAC',
@@ -451,6 +458,7 @@ def build_product_list(request):
             'name': cp.name, 'price': float(cp.price),
             'original_price': float(cp.price),
             'category': cp.category or 'General',
+            'product_type': cp.product or '',
             'brand': cp.brand or 'SYSMAC',
             'company': cp.company or 'SYSMAC',
             'image': _abs(request, cp.main_image.url) if cp.main_image else '',
@@ -463,6 +471,9 @@ def _build_product_dict(request, p, edited, photos_map=None, valid_categories=No
     """
     Bestseller and discount badges are disabled here too: `is_bestseller`
     is always False and `original_price` always mirrors `price`.
+
+    `product_type` is the raw acc_product.product value (or its
+    EditedAPIProduct override) — see build_product_list() docstring above.
     """
     code = str(p.get('code', ''))
     photos = (photos_map or {}).get(code)
@@ -489,6 +500,8 @@ def _build_product_dict(request, p, edited, photos_map=None, valid_categories=No
         'category': (edited.product if edited else None)
                     or _resolve_category(p.get('product', ''), valid_categories)
                     or 'General',
+        'product_type': (edited.product if edited else None)
+                        or (p.get('product') or '').strip(),
         'brand': (edited.brand if edited else None)
                  or _resolve_brand(p.get('brand', ''), valid_brands)
                  or 'SYSMAC',
@@ -571,6 +584,7 @@ def products(request):
                 'name': cp.name, 'price': float(cp.price),
                 'original_price': float(cp.price),
                 'category': cp.category or 'General',
+                'product_type': cp.product or '',
                 'brand': cp.brand or 'SYSMAC',
                 'company': cp.company or 'SYSMAC',
                 'image': _abs(request, cp.main_image.url) if cp.main_image else '',
@@ -1014,6 +1028,17 @@ def admin_banner_update(request, pk):
     if 'order' in request.data:
         b.order = _to_int(request.data['order'])
     if 'image' in request.FILES:
+        # Delete the old file from whatever storage backend is active
+        # (local disk OR R2). field.delete(save=False) calls
+        # storage.delete(self.name) internally, which — unlike
+        # default_storage.delete(field.path) — works on S3-compatible
+        # storage too, since .path is a local-filesystem-only property
+        # and raises NotImplementedError on S3Storage/R2.
+        if b.image:
+            try:
+                b.image.delete(save=False)
+            except Exception:
+                pass
         b.image = request.FILES['image']
     b.save()
     return Response(BannerSerializer(b, context={'request': request}).data)
@@ -1024,7 +1049,19 @@ def admin_banner_update(request, pk):
 def admin_banner_delete(request, pk):
     if not _is_admin(request.user):
         return Response({'detail': 'Forbidden'}, status=403)
-    Banner.objects.filter(pk=pk).delete()
+    try:
+        b = Banner.objects.get(pk=pk)
+    except Banner.DoesNotExist:
+        return Response({'detail': 'Not found'}, status=404)
+    # Remove the image from storage (local disk or R2) before removing
+    # the row itself, so deleting a banner doesn't leave an orphaned
+    # file sitting in the bucket forever.
+    if b.image:
+        try:
+            b.image.delete(save=False)
+        except Exception:
+            pass
+    b.delete()
     return Response({'success': True})
 
 
@@ -1090,10 +1127,13 @@ def admin_brand_update(request, pk):
     image_url = request.data.get('image_url', '')
 
     if logo:
+        # NOTE: previously used default_storage.delete(b.logo.path), but
+        # .path raises NotImplementedError on S3-compatible storage (R2).
+        # field.delete(save=False) is storage-agnostic (works for local
+        # disk and R2 alike), since it deletes via self.name, not .path.
         if b.logo:
             try:
-                from django.core.files.storage import default_storage
-                default_storage.delete(b.logo.path)
+                b.logo.delete(save=False)
             except Exception:
                 pass
         b.logo = logo
@@ -1101,8 +1141,7 @@ def admin_brand_update(request, pk):
     elif image_url:
         if b.logo:
             try:
-                from django.core.files.storage import default_storage
-                default_storage.delete(b.logo.path)
+                b.logo.delete(save=False)
             except Exception:
                 pass
             b.logo = None
@@ -1124,10 +1163,11 @@ def admin_brand_delete(request, pk):
         b = Brand.objects.get(pk=pk)
     except Brand.DoesNotExist:
         return Response({'detail': 'Not found'}, status=404)
+    # Same storage-agnostic deletion as admin_brand_update — .path breaks
+    # on S3/R2 storage, field.delete(save=False) works everywhere.
     if b.logo:
         try:
-            from django.core.files.storage import default_storage
-            default_storage.delete(b.logo.path)
+            b.logo.delete(save=False)
         except Exception:
             pass
     b.delete()

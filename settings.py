@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'storages',
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
@@ -181,8 +182,42 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 BASE_DIR = Path(__file__).resolve().parent  # if using Path
 
-# MEDIA_URL = "/media/"
-# MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+# ── Media storage: Cloudflare R2 (S3-compatible) ─────────────────────────
+# When CLOUDFLARE_R2_ENABLED=true (see .env), all FileField/ImageField
+# uploads (banners, brand logos, custom-product images, edited-product
+# overrides, etc.) go to the R2 bucket instead of local disk, and
+# obj.<field>.url returns a full https://<public-url>/... URL directly —
+# no /media/ prefix, no local MEDIA_ROOT involved.
+CLOUDFLARE_R2_ENABLED = os.environ.get('CLOUDFLARE_R2_ENABLED', 'false').lower() == 'true'
+
+if CLOUDFLARE_R2_ENABLED:
+    AWS_ACCESS_KEY_ID = os.environ['CLOUDFLARE_R2_ACCESS_KEY']
+    AWS_SECRET_ACCESS_KEY = os.environ['CLOUDFLARE_R2_SECRET_KEY']
+    AWS_STORAGE_BUCKET_NAME = os.environ['CLOUDFLARE_R2_BUCKET']
+    AWS_S3_ENDPOINT_URL = os.environ['CLOUDFLARE_R2_BUCKET_ENDPOINT']
+    AWS_S3_CUSTOM_DOMAIN = os.environ['CLOUDFLARE_R2_PUBLIC_URL'].replace('https://', '')
+
+    AWS_S3_ADDRESSING_STYLE = 'virtual'
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_S3_REGION_NAME = 'auto'          # R2 ignores region but boto3 requires one
+    AWS_S3_FILE_OVERWRITE = False        # don't clobber same-named uploads
+    AWS_QUERYSTRING_AUTH = False         # bucket is public, no signed query params needed
+    AWS_DEFAULT_ACL = None               # R2 doesn't support S3 ACLs
+
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3.S3Storage',
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
+
+    MEDIA_URL = f"{os.environ['CLOUDFLARE_R2_PUBLIC_URL']}/"
+else:
+    # Local-disk fallback if R2 is ever toggled off (e.g. offline dev)
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
 
 
 # Default primary key field type
